@@ -1,0 +1,3 @@
+.theia/
+.venv/
+gcloud-sa.json
