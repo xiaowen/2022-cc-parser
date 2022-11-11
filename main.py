@@ -8,18 +8,19 @@ from google.api_core.client_options import ClientOptions
 import google.auth
 from google.cloud import documentai
 from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload
 
 # Spreadsheet constants
 SPREADSHEET_ID = '1hxHkXY0jugNsx35P8i4fQylURkhqgBjoooHG5exSC2Q'
 SHEET_NAME_AZURE = 'Azure'
 SHEET_NAME_GCLOUD = 'GCloud'
+SHEET_NAME_GCLOUD_CUSTOM = 'GCloud-custom'
 
 # Google Cloud and Doc AI constants
 GCLOUD_PROJECT_ID = 'tensile-howl-307302'
 DOCAI_LOCATION = 'us'
 DOCAI_PROCESSOR_ID = 'be5c4fa46ae54842'
+DOCAI_CUSTOM_PROCESSOR_ID = '6e0851f642051754'
 
 # Azure constants
 AZURE_FORM_RECOGNIZER_ENDPOINT = "https://xiaowenx.cognitiveservices.azure.com/"
@@ -46,6 +47,10 @@ def append_to_sheet(sheet_name, file_name, stmt_date, balance, note):
 
 def get_stmt_list():
     folders = [
+        '1D40SA8N0JebirF1RUGdoWAQXvK06bGZS', # 2013
+        '1rCKY8AdOLjM2ihItZ0STbJ_CWJQa1nnd', # 2014
+        '1CfPS-q1gXuw4gjFfKlmscKRuGdq0wzr-', # 2015
+        '1VDNCQceSVRy7ZOO38SSG2TyG6kJ0m3_u', # 2016
         '11kCmcnVAwhhfrXwOA8NNeDD_HWZMEQCm', # 2017
         '1oxNbN_dp5uC-CD-PAc2nfS4t_2u3AN70', # 2018
         '1GMErfAByXF0T_miIxGUgJ7UmE1Qz7qSr', # 2019
@@ -76,11 +81,28 @@ def download_stmt(file_id):
 
     return file.getvalue()
 
-def parse_stmt(cloud, content, file_path=None):
-    if cloud == 'gcloud':
-        return parse_stmt_gcloud(content, file_path)
-    elif cloud == 'azure':
-        return parse_stmt_azure(content, file_path)
+def parse_stmt_gcloud_custom(image_content, file_path=None):
+    opts = ClientOptions(api_endpoint=f"{DOCAI_LOCATION}-documentai.googleapis.com")
+    client = documentai.DocumentProcessorServiceClient(client_options=opts)
+    name = client.processor_path(GCLOUD_PROJECT_ID, DOCAI_LOCATION, DOCAI_CUSTOM_PROCESSOR_ID)
+
+    if file_path:
+        with open(file_path, "rb") as image:
+            image_content = image.read()
+
+    raw_document = documentai.RawDocument(content=image_content, mime_type='application/pdf')
+    request = documentai.ProcessRequest(name=name, raw_document=raw_document)
+    result = client.process_document(request=request)
+    document = result.document
+
+    ents = dict((e.type_, e.text_anchor.content) for e in document.entities)
+
+    stmt_date = ents.get('new-balance-as-of', '')
+    stmt_date = stmt_date and stmt_date.split()[-1].strip(':')
+    balance = ents.get('balance')
+    note = 'Parsed: %s' % (ents)
+
+    return stmt_date, balance, note
 
 def parse_stmt_gcloud(image_content, file_path=None):
     opts = ClientOptions(api_endpoint=f"{DOCAI_LOCATION}-documentai.googleapis.com")
@@ -181,11 +203,14 @@ if __name__ == "__main__":
     # Get list of statements from Google Drive
     stmts = get_stmt_list()
 
-    for cloud in ['gcloud', 'azure']:
+    for cloud in ['gcloud', 'gcloud_custom', 'azure']:
         print('Working on: ' + cloud)
 
         # Get the existing info in the spreadsheet
-        sheet_name = dict(gcloud=SHEET_NAME_GCLOUD, azure=SHEET_NAME_AZURE)[cloud]
+        sheet_name = dict(
+            gcloud=SHEET_NAME_GCLOUD,
+            gcloud_custom=SHEET_NAME_GCLOUD_CUSTOM,
+            azure=SHEET_NAME_AZURE)[cloud]
         sheets_data = get_sheets_data(sheet_name)
 
         for file_name, file_id in stmts:
@@ -198,7 +223,12 @@ if __name__ == "__main__":
             content = download_stmt(file_id)
 
             # Parse out the statement date and balance
-            stmt_date, balance, note = parse_stmt(cloud, content)
+            if cloud == 'gcloud':
+                stmt_date, balance, note = parse_stmt_gcloud(content)
+            elif cloud == 'gcloud_custom':
+                stmt_date, balance, note = parse_stmt_gcloud_custom(content)
+            elif cloud == 'azure':
+                stmt_date, balance, note = parse_stmt_azure(content)
 
             # Add results to spreadsheet
             append_to_sheet(sheet_name, file_name, stmt_date, balance, note)
